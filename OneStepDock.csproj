@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>OneStepDock</AssemblyName>
+    <RootNamespace>OneStepDock</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Product>一步 · 窗口侧栏</Product>
+    <AssemblyTitle>一步 · Windows 窗口侧栏</AssemblyTitle>
+    <Version>0.1.1</Version>
+  </PropertyGroup>
+
+</Project>
