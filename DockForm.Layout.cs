@@ -375,6 +375,19 @@ namespace OneStepDock
             }
         }
 
+        /// <summary>右上角角标（应用图标 / 关闭按钮）的屏幕矩形，绘制与命中判定共用。</summary>
+        private Rectangle BadgeScreenRect(ThumbnailCard card)
+        {
+            Rectangle preview = card.PreviewScreenBounds;
+            int size = Px(28);
+            int margin = Px(10);
+            return new Rectangle(
+                preview.Right - margin - size,
+                preview.Top + margin,
+                size,
+                size);
+        }
+
         private void CreateOverlay()
         {
             if (_overlay != null || !Visible || !IsHandleCreated)
@@ -411,8 +424,6 @@ namespace OneStepDock
             }
 
             Point origin = RectangleToScreen(ClientRectangle).Location;
-            int badgeSize = Px(28);
-            int margin = Px(10);
             int iconSize = Px(19);
 
             try
@@ -432,11 +443,12 @@ namespace OneStepDock
                         }
 
                         Rectangle preview = card.PreviewScreenBounds;
+                        Rectangle badgeScreen = BadgeScreenRect(card);
                         var badgeRect = new Rectangle(
-                            preview.Right - margin - badgeSize - origin.X,
-                            preview.Top + margin - origin.Y,
-                            badgeSize,
-                            badgeSize);
+                            badgeScreen.X - origin.X,
+                            badgeScreen.Y - origin.Y,
+                            badgeScreen.Width,
+                            badgeScreen.Height);
 
                         if (badgeRect.Right < 0 || badgeRect.Bottom < 0 ||
                             badgeRect.Left > width || badgeRect.Top > height)
@@ -444,22 +456,50 @@ namespace OneStepDock
                             continue;
                         }
 
+                        bool closeHot = card.IsCloseHot;
                         using (GraphicsPath path = CreateRoundedPath(badgeRect, Px(7)))
-                        using (var fill = new SolidBrush(Color.FromArgb(125, 10, 15, 22)))
+                        using (var fill = new SolidBrush(closeHot
+                            ? Color.FromArgb(225, 196, 54, 54)
+                            : Color.FromArgb(125, 10, 15, 22)))
                         {
                             g.FillPath(fill, path);
                         }
 
                         using (GraphicsPath path = CreateRoundedPath(badgeRect, Px(7)))
-                        using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
+                        using (var pen = new Pen(closeHot
+                            ? Color.FromArgb(190, 255, 255, 255)
+                            : Color.FromArgb(60, 255, 255, 255), 1f))
                         {
                             g.DrawPath(pen, path);
                         }
 
+                        if (closeHot)
+                        {
+                            int inset = Px(9);
+                            using (var pen = new Pen(Color.FromArgb(250, 255, 255, 255), 1.8f))
+                            {
+                                pen.StartCap = LineCap.Round;
+                                pen.EndCap = LineCap.Round;
+                                g.DrawLine(
+                                    pen,
+                                    badgeRect.Left + inset,
+                                    badgeRect.Top + inset,
+                                    badgeRect.Right - inset,
+                                    badgeRect.Bottom - inset);
+                                g.DrawLine(
+                                    pen,
+                                    badgeRect.Right - inset,
+                                    badgeRect.Top + inset,
+                                    badgeRect.Left + inset,
+                                    badgeRect.Bottom - inset);
+                            }
+                            continue;
+                        }
+
                         Bitmap icon = card.AppIcon;
                         var iconRect = new Rectangle(
-                            badgeRect.X + (badgeSize - iconSize) / 2,
-                            badgeRect.Y + (badgeSize - iconSize) / 2,
+                            badgeRect.X + (badgeRect.Width - iconSize) / 2,
+                            badgeRect.Y + (badgeRect.Height - iconSize) / 2,
                             iconSize,
                             iconSize);
 

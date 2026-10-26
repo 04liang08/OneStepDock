@@ -15,7 +15,6 @@ namespace OneStepDock
         private readonly ThumbSurface _thumb;
         private readonly ToolTip _toolTip;
         private readonly Font _placeholderFont;
-        private readonly Font _mainMessageFont;
         private WindowItem _info;
         private IntPtr _thumbnailId;
         private Bitmap _icon;
@@ -27,6 +26,8 @@ namespace OneStepDock
         private bool _thumbFullyVisible = true;
         private bool _dragCandidate;
         private bool _dragging;
+        private bool _closeHot;
+        private bool _closePressed;
         private Point _dragStartScreen;
         private Control _dragSource;
         private DateTime _lastStaticCaptureUtc;
@@ -44,6 +45,15 @@ namespace OneStepDock
         public event EventHandler DragStarted;
         public event EventHandler DragMoved;
         public event EventHandler DragEnded;
+
+        /// <summary>指针在卡片内移动（用于命中右上角关闭按钮）。</summary>
+        public event EventHandler PointerMoved;
+
+        /// <summary>右上角角标进入/离开关闭状态。</summary>
+        public event EventHandler CloseHotChanged;
+
+        /// <summary>点击右上角关闭按钮。</summary>
+        public event EventHandler CloseRequested;
 
         public bool IsDesktop
         {
@@ -117,6 +127,38 @@ namespace OneStepDock
             get { return _hover; }
         }
 
+        /// <summary>指针是否停在右上角、角标已变成关闭按钮。</summary>
+        public bool IsCloseHot
+        {
+            get { return _closeHot; }
+        }
+
+        /// <summary>由外层按角标几何位置置位；桌面卡不允许关闭。</summary>
+        public void SetCloseHot(bool value)
+        {
+            if (_isDesktop)
+            {
+                value = false;
+            }
+
+            if (_closeHot == value)
+            {
+                return;
+            }
+
+            _closeHot = value;
+            if (!value)
+            {
+                _closePressed = false;
+            }
+
+            EventHandler handler = CloseHotChanged;
+            if (handler != null)
+            {
+                handler(this, EventArgs.Empty);
+            }
+        }
+
         public string ProcessName
         {
             get { return _info.ProcessName; }
@@ -133,7 +175,6 @@ namespace OneStepDock
             _toolTip = toolTip;
             _isDesktop = desktop;
             _placeholderFont = CreateUiFont(8f, FontStyle.Regular);
-            _mainMessageFont = CreateUiFont(9.5f, FontStyle.Regular);
 
             BackColor = DockTheme.Backdrop;
             DoubleBuffered = true;
@@ -328,7 +369,10 @@ namespace OneStepDock
                 fSourceClientAreaOnly = true
             };
 
-            if (visible.Width < thumbScreen.Width || visible.Height < thumbScreen.Height)
+            // 最小化窗口没有真实几何尺寸可用来算源矩形，直接整幅铺开，
+            // 否则卡片在列表里只露出一部分时会整块消失。
+            if (!_info.IsMinimized &&
+                (visible.Width < thumbScreen.Width || visible.Height < thumbScreen.Height))
             {
                 Native.RECT client;
                 if (!Native.GetClientRect(_info.Handle, out client) ||
@@ -398,7 +442,6 @@ namespace OneStepDock
                     _icon = null;
                 }
                 _placeholderFont.Dispose();
-                _mainMessageFont.Dispose();
             }
 
             base.Dispose(disposing);
@@ -416,12 +459,6 @@ namespace OneStepDock
             if (_isDesktop)
             {
                 PaintDesktopPreview(g, area);
-                return;
-            }
-
-            if (_info.IsForeground)
-            {
-                PaintMainWindow(g, area);
                 return;
             }
 
@@ -457,30 +494,6 @@ namespace OneStepDock
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
                     TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
             }
-        }
-
-        private void PaintMainWindow(Graphics g, Rectangle area)
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var brush = new LinearGradientBrush(
-                area, DockTheme.ThumbTop, DockTheme.ThumbBottom, 90f))
-            {
-                g.FillRectangle(brush, area);
-            }
-
-            var textRect = new Rectangle(
-                area.Left + Px(16),
-                area.Top + Px(10),
-                area.Width - Px(32),
-                area.Height - Px(20));
-            TextRenderer.DrawText(
-                g,
-                "当前窗口已在主窗口中打开",
-                _mainMessageFont,
-                textRect,
-                DockTheme.Muted,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
-                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
         }
 
         private void PaintStaticPreview(Graphics g, Rectangle area)
@@ -699,15 +712,37 @@ namespace OneStepDock
         private void UseStaticPreview()
         {
             _staticMode = true;
-            Bitmap capture = WindowCapture.CaptureClient(_info.Handle);
+
+            // 最小化窗口用 PrintWindow 只能截到空白，直接沿用最小化前的最后一帧。
+            Bitmap capture = _info.IsMinimized
+                ? null
+                : WindowCapture.CaptureClient(_info.Handle);
+
             if (capture != null && WindowCapture.IsBlank(capture))
             {
                 capture.Dispose();
                 capture = null;
             }
+
+            if (capture == null)
+            {
+                _thumb.HasContent = _staticPreview != null;
+                _live = false;
+                _thumb.Live = false;
+                UpdateThumbnailDestination();
+                _thumb.Invalidate();
+                return;
+            }
+
+            DisposeScaledPreview();
+            Bitmap previous = _staticPreview;
             _staticPreview = capture;
-            _staticSignature = capture != null ? WindowCapture.ComputeSignature(capture) : 0;
-            _thumb.HasContent = capture != null;
+            _staticSignature = WindowCapture.ComputeSignature(capture);
+            if (previous != null)
+            {
+                previous.Dispose();
+            }
+            _thumb.HasContent = true;
             _lastStaticCaptureUtc = DateTime.UtcNow;
             _live = false;
             _thumb.Live = false;
@@ -747,27 +782,25 @@ namespace OneStepDock
             }
 
             ReleaseThumbnail();
-            DisposeStaticPreview();
+            // 最小化时保留最后一帧静态图，否则会退化成空白占位。
+            if (!_info.IsMinimized)
+            {
+                DisposeStaticPreview();
+            }
             _staticMode = false;
 
-            if (_info.IsForeground)
-            {
-                _thumb.Live = false;
-                _thumb.HasContent = false;
-                _thumb.Invalidate();
-                return;
-            }
-
             Control top = TopLevelControl;
-            if (_info.IsMinimized || !Native.IsWindow(_info.Handle) ||
-                top == null || !top.IsHandleCreated)
+            if (!Native.IsWindow(_info.Handle) || top == null || !top.IsHandleCreated)
             {
                 _thumb.Live = false;
                 _thumb.Invalidate();
                 return;
             }
 
-            if (_info.IsNoRedirectionBitmap)
+            // 最小化窗口和前台窗口都能注册 DWM 缩略图：
+            // 前者由 DWM 保留最后一帧（与任务栏预览一致），后者会正常实时更新。
+            // 只有拿不到重定向位图的程序在非最小化状态下才退回静态截图。
+            if (_info.IsNoRedirectionBitmap && !_info.IsMinimized)
             {
                 UseStaticPreview();
                 return;
@@ -905,6 +938,15 @@ namespace OneStepDock
                 return;
             }
 
+            if (_closeHot)
+            {
+                // 按下关闭按钮：只记下意图，松开时再决定，期间不进入排序拖拽。
+                _closePressed = true;
+                _dragSource = source;
+                source.Capture = true;
+                return;
+            }
+
             _dragCandidate = true;
             _dragStartScreen = Cursor.Position;
             _dragSource = source;
@@ -913,6 +955,12 @@ namespace OneStepDock
 
         private void OnCardMouseMove(MouseEventArgs e)
         {
+            EventHandler pointer = PointerMoved;
+            if (pointer != null)
+            {
+                pointer(this, EventArgs.Empty);
+            }
+
             if (!_dragCandidate && !_dragging)
             {
                 return;
@@ -927,6 +975,7 @@ namespace OneStepDock
                 }
 
                 _dragging = true;
+                SetCloseHot(false);
                 Cursor = Cursors.SizeNS;
                 _thumb.Cursor = Cursors.SizeNS;
                 SetHover(true);
@@ -968,6 +1017,21 @@ namespace OneStepDock
                 return;
             }
 
+            if (_closePressed)
+            {
+                _closePressed = false;
+                ReleaseDragCapture();
+                if (_closeHot)
+                {
+                    EventHandler close = CloseRequested;
+                    if (close != null)
+                    {
+                        close(this, EventArgs.Empty);
+                    }
+                }
+                return;
+            }
+
             if (_dragCandidate)
             {
                 _dragCandidate = false;
@@ -978,7 +1042,12 @@ namespace OneStepDock
                 {
                     clicked(this, EventArgs.Empty);
                 }
+                return;
             }
+
+            // 兜底：在关闭按钮上按下后又移开指针，上面几个分支都不会进，
+            // 这里必须把鼠标捕获放掉，否则之后所有移动都会被这张卡吃掉。
+            ReleaseDragCapture();
         }
 
         private void ReleaseDragCapture()
@@ -1000,6 +1069,10 @@ namespace OneStepDock
                 return;
             }
             _hover = value;
+            if (!value)
+            {
+                SetCloseHot(false);
+            }
             Invalidate();
 
             EventHandler handler = HoverChanged;

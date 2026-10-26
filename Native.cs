@@ -11,6 +11,7 @@ namespace OneStepDock
         public const int WM_SETTINGCHANGE = 0x001A;
         public const int WM_DISPLAYCHANGE = 0x007E;
         public const int WM_GETICON = 0x007F;
+        public const int WM_CLOSE = 0x0010;
 
         public const int GWL_EXSTYLE = -20;
         public const long WS_EX_TRANSPARENT = 0x00000020L;
@@ -226,6 +227,9 @@ namespace OneStepDock
 
         [DllImport("user32.dll")]
         public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        public static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern bool SystemParametersInfo(

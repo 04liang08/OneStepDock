@@ -218,6 +218,12 @@ namespace OneStepDock
                 return false;
             }
 
+            // 指针停在关闭按钮上时不要弹预览，否则会把要点的按钮盖住。
+            if (card.IsCloseHot)
+            {
+                return false;
+            }
+
             if (_settings.HoverPreviewMode < 1)
             {
                 return false;
@@ -240,12 +246,6 @@ namespace OneStepDock
 
             IntPtr handle = card.WindowHandle;
             if (handle == IntPtr.Zero || !Native.IsWindow(handle))
-            {
-                return false;
-            }
-
-            // 最小化窗口没有可用的真实位置和画面，不做悬停预览。
-            if (Native.IsIconic(handle))
             {
                 return false;
             }
@@ -287,14 +287,21 @@ namespace OneStepDock
         private void StartPeek(ThumbnailCard card)
         {
             IntPtr handle = card.WindowHandle;
-            Rectangle frame = GetFrameBounds(handle);
+            bool minimized = Native.IsIconic(handle);
+
+            // 最小化窗口的真实矩形在 -32000 附近，不能直接拿来贴图。
+            // 改用「还原后会在哪里」作为虚拟原位，这样预览出现的位置和点一下卡片
+            // 之后窗口出现的位置一致。
+            Rectangle frame = minimized ? GetRestoredFrame(handle) : GetFrameBounds(handle);
             if (frame.Width <= 0 || frame.Height <= 0)
             {
                 _peekCard = null;
                 return;
             }
 
-            Screen screen = Screen.FromHandle(handle) ?? Screen.PrimaryScreen;
+            // 最小化窗口可能停在别的显示器上，按虚拟原位选屏更可靠。
+            Screen screen = Screen.FromRectangle(frame) ?? Screen.FromHandle(handle) ??
+                            Screen.PrimaryScreen;
             if (screen == null)
             {
                 _peekCard = null;
@@ -310,6 +317,13 @@ namespace OneStepDock
 
             bool switching = _peekActive;
             int mode = _settings.HoverPreviewMode;
+
+            // 最小化窗口「置前」是无效的：把 Z 序提到最前它也依然是最小化状态，
+            // 洞里只会露出底下的画面。这类窗口统一走缩略图投影。
+            if (minimized)
+            {
+                mode = 1;
+            }
 
             try
             {
@@ -350,7 +364,7 @@ namespace OneStepDock
                         _peekThumb = new PeekThumbWindow();
                         _peekThumb.Clicked += OnPeekThumbClicked;
                     }
-                    _peekThumb.ShowFor(frame, handle);
+                    _peekThumb.ShowFor(frame, handle, card.Title);
                 }
 
                 _peekCard = card;
@@ -541,6 +555,53 @@ namespace OneStepDock
                 _peekMask.Dispose();
                 _peekMask = null;
             }
+        }
+
+        /// <summary>
+        /// 取最小化窗口「如果还原会出现在哪里」。普通最小化窗口就是最小化前的位置；
+        /// 最小化前是最大化的窗口则用它所在显示器的工作区（点一下卡片正是还原成最大化）。
+        /// </summary>
+        private static Rectangle GetRestoredFrame(IntPtr handle)
+        {
+            var placement = new Native.WINDOWPLACEMENT
+            {
+                length = Marshal.SizeOf(typeof(Native.WINDOWPLACEMENT))
+            };
+
+            Rectangle normal = Rectangle.Empty;
+            bool restoreToMaximized = false;
+
+            if (Native.GetWindowPlacement(handle, ref placement))
+            {
+                // 最小化后 showCmd 是 SW_SHOWMINIMIZED，是否恢复成最大化记在 flags 里。
+                restoreToMaximized =
+                    (placement.flags & 0x0002) != 0 ||
+                    (placement.showCmd & 0x000F) == Native.SW_MAXIMIZE;
+
+                normal = new Rectangle(
+                    placement.rcNormalPosition.Left,
+                    placement.rcNormalPosition.Top,
+                    placement.rcNormalPosition.Width,
+                    placement.rcNormalPosition.Height);
+            }
+
+            if (normal.Width <= 0 || normal.Height <= 0)
+            {
+                Screen primary = Screen.PrimaryScreen;
+                if (primary == null)
+                {
+                    return Rectangle.Empty;
+                }
+                normal = primary.WorkingArea;
+            }
+
+            if (!restoreToMaximized)
+            {
+                return normal;
+            }
+
+            Screen screen = Screen.FromRectangle(normal) ?? Screen.PrimaryScreen;
+            return screen != null ? screen.WorkingArea : normal;
         }
 
         private static Rectangle GetFrameBounds(IntPtr handle)

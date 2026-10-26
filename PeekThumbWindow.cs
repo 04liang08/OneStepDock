@@ -13,6 +13,7 @@ namespace OneStepDock
         private IntPtr _thumbnailId;
         private Bitmap _staticImage;
         private bool _staticMode;
+        private string _placeholderText;
 
         public event EventHandler Clicked;
 
@@ -85,22 +86,55 @@ namespace OneStepDock
                 e.Graphics.FillRectangle(brush, ClientRectangle);
             }
 
-            if (!_staticMode || _staticImage == null)
+            if (_staticMode && _staticImage != null)
             {
+                e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                e.Graphics.DrawImage(_staticImage, ClientRectangle);
                 return;
             }
 
-            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            e.Graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            e.Graphics.DrawImage(_staticImage, ClientRectangle);
+            if (!string.IsNullOrEmpty(_placeholderText))
+            {
+                // 既拿不到 DWM 画面也没有截图可用时的兜底：给个说明，而不是一块黑。
+                int size = Math.Max(12, Math.Min(20, ClientSize.Height / 14));
+                using (Font font = CreateUiFont(size))
+                using (var brush = new SolidBrush(Color.FromArgb(170, 235, 240, 248)))
+                using (var format = new StringFormat
+                {
+                    Trimming = StringTrimming.EllipsisCharacter,
+                    FormatFlags = StringFormatFlags.NoWrap,
+                    Alignment = StringAlignment.Center,
+                    LineAlignment = StringAlignment.Center
+                })
+                {
+                    var rect = new RectangleF(
+                        0, 0, ClientSize.Width, ClientSize.Height);
+                    e.Graphics.DrawString(_placeholderText, font, brush, rect, format);
+                }
+            }
         }
 
-        public void ShowFor(Rectangle frameScreen, IntPtr source)
+        private static Font CreateUiFont(int pixelHeight)
+        {
+            try
+            {
+                return new Font("Microsoft YaHei UI", pixelHeight, FontStyle.Regular, GraphicsUnit.Pixel);
+            }
+            catch
+            {
+                return new Font(FontFamily.GenericSansSerif, pixelHeight, FontStyle.Regular, GraphicsUnit.Pixel);
+            }
+        }
+
+        public void ShowFor(Rectangle frameScreen, IntPtr source, string title = null)
         {
             if (frameScreen.Width <= 0 || frameScreen.Height <= 0)
             {
                 return;
             }
+
+            _placeholderText = null;
 
             try
             {
@@ -125,7 +159,7 @@ namespace OneStepDock
 
                 if (source == IntPtr.Zero || !Native.IsWindow(source))
                 {
-                    UseStaticImage(source);
+                    UseStaticImage(source, title);
                     return;
                 }
 
@@ -133,7 +167,7 @@ namespace OneStepDock
                 int hr = Native.DwmRegisterThumbnail(handle, source, out thumbnailId);
                 if (hr != 0 || thumbnailId == IntPtr.Zero)
                 {
-                    UseStaticImage(source);
+                    UseStaticImage(source, title);
                     return;
                 }
 
@@ -155,11 +189,11 @@ namespace OneStepDock
             catch (Exception ex)
             {
                 Program.Log(ex);
-                UseStaticImage(source);
+                UseStaticImage(source, title);
             }
         }
 
-        private void UseStaticImage(IntPtr source)
+        private void UseStaticImage(IntPtr source, string title)
         {
             _staticMode = true;
             if (_staticImage != null)
@@ -170,8 +204,20 @@ namespace OneStepDock
 
             if (source != IntPtr.Zero)
             {
-                _staticImage = WindowCapture.CaptureClient(source);
+                Bitmap capture = WindowCapture.CaptureClient(source);
+                if (capture != null && WindowCapture.IsBlank(capture))
+                {
+                    // 最小化窗口的 PrintWindow 只会返回纯白/纯黑，
+                    // 用上去就是一块白板，不如留空走占位提示。
+                    capture.Dispose();
+                    capture = null;
+                }
+                _staticImage = capture;
             }
+
+            _placeholderText = _staticImage == null
+                ? (string.IsNullOrEmpty(title) ? "无法获取画面" : title)
+                : null;
 
             Invalidate();
         }
@@ -197,6 +243,7 @@ namespace OneStepDock
             }
 
             _staticMode = false;
+            _placeholderText = null;
 
             if (_staticImage != null)
             {

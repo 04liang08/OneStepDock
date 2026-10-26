@@ -12,7 +12,13 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Product>一步 · 窗口侧栏</Product>
     <AssemblyTitle>一步 · Windows 窗口侧栏</AssemblyTitle>
-    <Version>0.3.1</Version>
+    <Company>OneStepDock</Company>
+    <Copyright>Copyright © 2026 OneStepDock · github.com/04liang08/OneStepDock</Copyright>
+    <Description>把当前可见的窗口以实时缩略图竖排展示在屏幕侧栏，点击即切换。</Description>
+    <RepositoryUrl>https://github.com/04liang08/OneStepDock</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/04liang08/OneStepDock</PackageProjectUrl>
+    <NeutralLanguage>zh-Hans</NeutralLanguage>
+    <Version>0.4.2</Version>
   </PropertyGroup>
 
 </Project>

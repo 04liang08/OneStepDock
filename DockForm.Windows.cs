@@ -147,6 +147,9 @@ namespace OneStepDock
                     card.DragStarted += OnCardDragStarted;
                     card.DragMoved += OnCardDragMoved;
                     card.DragEnded += OnCardDragEnded;
+                    card.PointerMoved += OnCardPointerMoved;
+                    card.CloseHotChanged += OnCardCloseHotChanged;
+                    card.CloseRequested += OnCardCloseRequested;
                     added.Add(card);
                 }
 
