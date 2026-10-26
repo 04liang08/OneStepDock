@@ -13,6 +13,7 @@ namespace OneStepDock
         public bool IsMinimized { get; set; }
         public bool IsElevated { get; set; }
         public bool IsNoRedirectionBitmap { get; set; }
+        public bool IsForeground { get; set; }
     }
 
     internal static class WindowScanner
@@ -39,7 +40,7 @@ namespace OneStepDock
             {
                 try
                 {
-                    if (!Native.IsWindowVisible(hWnd) || hWnd == shell || hWnd == foreground)
+                    if (!Native.IsWindowVisible(hWnd) || hWnd == shell)
                     {
                         return true;
                     }
@@ -106,7 +107,8 @@ namespace OneStepDock
                         ProcessName = processName,
                         IsMinimized = Native.IsIconic(hWnd),
                         IsElevated = Elevation.IsProcessElevated(pid),
-                        IsNoRedirectionBitmap = noRedirectionBitmap
+                        IsNoRedirectionBitmap = noRedirectionBitmap,
+                        IsForeground = hWnd == foreground
                     });
                 }
                 catch

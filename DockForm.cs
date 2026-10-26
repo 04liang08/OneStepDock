@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -37,14 +38,26 @@ namespace OneStepDock
         private readonly ToolStripMenuItem _monitorMenu;
         private readonly ToolStripMenuItem _staticRefreshIntervalItem;
         private readonly ToolStripMenuItem _staticRefreshOnDemandItem;
+        private readonly ToolStripMenuItem _hoverOffItem;
+        private readonly ToolStripMenuItem _hoverThumbItem;
+        private readonly ToolStripMenuItem _hoverRaiseItem;
+        private readonly ToolStripMenuItem _labelsItem;
+        private readonly ToolStripMenuItem _labelSizeSmallItem;
+        private readonly ToolStripMenuItem _labelSizeNormalItem;
+        private readonly ToolStripMenuItem _labelSizeLargeItem;
+        private readonly ToolStripMenuItem _labelSizeHugeItem;
         private readonly ToolStripMenuItem _pinItem;
         private readonly ToolStripMenuItem _excludeItem;
+        private readonly ToolStripMenuItem _labelItem;
+        private readonly ToolStripMenuItem _clearLabelItem;
         private readonly ToolStripSeparator _cardSeparator;
         private readonly ToolStripMenuItem _exitItem;
         private readonly Dictionary<IntPtr, Native.WINDOWPLACEMENT> _savedPlacements =
             new Dictionary<IntPtr, Native.WINDOWPLACEMENT>();
 
         private ThumbnailCard _menuCard;
+        private ThumbnailCard _desktopCard;
+        private ThumbnailCard _dragCard;
         private IconOverlay _overlay;
         private bool _overlayHiddenForMenu;
         private NotifyIcon _tray;
@@ -150,6 +163,41 @@ namespace OneStepDock
             staticRefreshMenu.DropDownItems.Add(new ToolStripSeparator());
             staticRefreshMenu.DropDownItems.Add(
                 new ToolStripMenuItem("仅影响无法实时预览的窗口") { Enabled = false });
+
+            var hoverMenu = new ToolStripMenuItem("悬停预览");
+            _hoverOffItem = new ToolStripMenuItem("关闭");
+            _hoverOffItem.Click += (s, e) => SetHoverPreviewMode(0);
+            _hoverThumbItem = new ToolStripMenuItem("缩略图贴原位");
+            _hoverThumbItem.Click += (s, e) => SetHoverPreviewMode(1);
+            _hoverRaiseItem = new ToolStripMenuItem("真实窗口置前");
+            _hoverRaiseItem.Click += (s, e) => SetHoverPreviewMode(2);
+            hoverMenu.DropDownItems.Add(_hoverOffItem);
+            hoverMenu.DropDownItems.Add(_hoverThumbItem);
+            hoverMenu.DropDownItems.Add(_hoverRaiseItem);
+            hoverMenu.DropDownItems.Add(new ToolStripSeparator());
+            hoverMenu.DropDownItems.Add(
+                new ToolStripMenuItem("悬停约 0.3 秒后显示，指针离开即收起") { Enabled = false });
+
+            _labelsItem = new ToolStripMenuItem("重名窗口显示标签");
+            _labelsItem.Click += (s, e) => ToggleAmbiguityLabels();
+
+            var labelSizeMenu = new ToolStripMenuItem("标签字号");
+            _labelSizeSmallItem = new ToolStripMenuItem("小") { Tag = "小" };
+            _labelSizeSmallItem.Click += (s, e) => SetLabelFontSize(12);
+            _labelSizeNormalItem = new ToolStripMenuItem("标准") { Tag = "标准" };
+            _labelSizeNormalItem.Click += (s, e) => SetLabelFontSize(14);
+            _labelSizeLargeItem = new ToolStripMenuItem("大") { Tag = "大" };
+            _labelSizeLargeItem.Click += (s, e) => SetLabelFontSize(17);
+            _labelSizeHugeItem = new ToolStripMenuItem("特大") { Tag = "特大" };
+            _labelSizeHugeItem.Click += (s, e) => SetLabelFontSize(21);
+            labelSizeMenu.DropDownItems.Add(_labelSizeSmallItem);
+            labelSizeMenu.DropDownItems.Add(_labelSizeNormalItem);
+            labelSizeMenu.DropDownItems.Add(_labelSizeLargeItem);
+            labelSizeMenu.DropDownItems.Add(_labelSizeHugeItem);
+            labelSizeMenu.DropDownItems.Add(new ToolStripSeparator());
+            labelSizeMenu.DropDownItems.Add(
+                new ToolStripMenuItem("侧栏上按住 Ctrl 滚轮可微调") { Enabled = false });
+
             _restoreSizesItem = new ToolStripMenuItem("还原被最大化的窗口");
             _restoreSizesItem.Click += (s, e) => RestoreWindowSizes();
             settingsMenu.DropDownItems.Add(_hotkeyItem);
@@ -157,6 +205,9 @@ namespace OneStepDock
             settingsMenu.DropDownItems.Add(new ToolStripSeparator());
             settingsMenu.DropDownItems.Add(_monitorMenu);
             settingsMenu.DropDownItems.Add(staticRefreshMenu);
+            settingsMenu.DropDownItems.Add(hoverMenu);
+            settingsMenu.DropDownItems.Add(_labelsItem);
+            settingsMenu.DropDownItems.Add(labelSizeMenu);
             settingsMenu.DropDownItems.Add(_restoreSizesItem);
             settingsMenu.DropDownItems.Add(_restoreHiddenItem);
             settingsMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -166,6 +217,10 @@ namespace OneStepDock
             _pinItem.Click += (s, e) => TogglePinnedApp();
             _excludeItem = new ToolStripMenuItem("隐藏该应用");
             _excludeItem.Click += (s, e) => ExcludeCurrentApp();
+            _labelItem = new ToolStripMenuItem("设置自定义标签…");
+            _labelItem.Click += (s, e) => BeginInvoke(new Action(EditCardLabel));
+            _clearLabelItem = new ToolStripMenuItem("清除自定义标签");
+            _clearLabelItem.Click += (s, e) => BeginInvoke(new Action(ClearCardLabel));
             _cardSeparator = new ToolStripSeparator();
 
             _exitItem = new ToolStripMenuItem("退出一步");
@@ -177,6 +232,8 @@ namespace OneStepDock
 
             _menu.Items.Add(_pinItem);
             _menu.Items.Add(_excludeItem);
+            _menu.Items.Add(_labelItem);
+            _menu.Items.Add(_clearLabelItem);
             _menu.Items.Add(_cardSeparator);
             _menu.Items.Add(_showItem);
             _menu.Items.Add(new ToolStripSeparator());
@@ -198,6 +255,7 @@ namespace OneStepDock
             };
             _menu.Opened += (s, e) =>
             {
+                EndPeek();
                 _toolTip.Active = false;
                 if (_overlay == null)
                 {
@@ -241,6 +299,8 @@ namespace OneStepDock
                 _quickRefreshTimer.Stop();
                 RefreshWindows();
             };
+
+            InitializePeek();
 
             Application.AddMessageFilter(this);
 
@@ -419,6 +479,7 @@ namespace OneStepDock
                         if (!_exiting && Visible)
                         {
                             ApplyAppBar();
+                            _desktopCard?.ReloadDesktopWallpaper();
                             RefreshWindows();
                         }
                     }));
@@ -432,6 +493,7 @@ namespace OneStepDock
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             _exiting = true;
+            DisposePeek();
             _scanTimer?.Stop();
             _quickRefreshTimer?.Stop();
             SaveWidth();
@@ -494,6 +556,14 @@ namespace OneStepDock
                 return false;
             }
 
+            // 低字位含 MK_CONTROL：按住 Ctrl 时滚轮调整标签字号，而不是滚动列表。
+            if ((((int)m.WParam) & 0x0008) != 0)
+            {
+                int step = Math.Abs(delta) >= 240 ? 2 : 1;
+                SetLabelFontSize(_settings.LabelFontSize + (delta > 0 ? step : -step));
+                return true;
+            }
+
             ScrollDock(delta);
             return true;
         }
@@ -508,6 +578,7 @@ namespace OneStepDock
             if (Visible)
             {
                 _scanTimer.Stop();
+                EndPeek();
                 _overlay?.Hide();
                 RemoveAppBar();
                 Hide();
@@ -572,6 +643,65 @@ namespace OneStepDock
             {
                 card.RefreshStaticPreviewOnce();
             }
+        }
+
+        private void SetHoverPreviewMode(int mode)
+        {
+            int normalized = mode < 0 || mode > 2 ? 1 : mode;
+            if (_settings.HoverPreviewMode == normalized)
+            {
+                return;
+            }
+
+            EndPeek();
+            _settings.HoverPreviewMode = normalized;
+            SettingsStore.Save(_settings);
+            UpdateMenuState();
+        }
+
+        private void ToggleAmbiguityLabels()
+        {
+            _settings.ShowAmbiguityLabels = !_settings.ShowAmbiguityLabels;
+            SettingsStore.Save(_settings);
+            UpdateMenuState();
+            RefreshWindows();
+            RefreshOverlay();
+        }
+
+        private void SetLabelFontSize(int size)
+        {
+            if (size < AppSettings.MinLabelFontSize)
+            {
+                size = AppSettings.MinLabelFontSize;
+            }
+            else if (size > AppSettings.MaxLabelFontSize)
+            {
+                size = AppSettings.MaxLabelFontSize;
+            }
+
+            if (_settings.LabelFontSize == size)
+            {
+                return;
+            }
+
+            _settings.LabelFontSize = size;
+            SettingsStore.Save(_settings);
+            UpdateMenuState();
+            RefreshOverlay();
+        }
+
+        private void UpdateLabelSizeItems()
+        {
+            MarkLabelSize(_labelSizeSmallItem, 12);
+            MarkLabelSize(_labelSizeNormalItem, 14);
+            MarkLabelSize(_labelSizeLargeItem, 17);
+            MarkLabelSize(_labelSizeHugeItem, 21);
+        }
+
+        private void MarkLabelSize(ToolStripMenuItem item, int size)
+        {
+            string name = item.Tag as string ?? "";
+            item.Text = (_settings.LabelFontSize == size ? "✓  " : "     ") + name;
         }
 
         private void SetThemeMode(int mode)
@@ -720,15 +850,24 @@ namespace OneStepDock
                 (!onDemand ? "✓  " : "     ") + "定时刷新（4 秒）";
             _staticRefreshOnDemandItem.Text =
                 (onDemand ? "✓  " : "     ") + "仅在切走或标题变化时";
+            _hoverOffItem.Text = (_settings.HoverPreviewMode == 0 ? "✓  " : "     ") + "关闭";
+            _hoverThumbItem.Text = (_settings.HoverPreviewMode == 1 ? "✓  " : "     ") + "缩略图贴原位";
+            _hoverRaiseItem.Text = (_settings.HoverPreviewMode == 2 ? "✓  " : "     ") + "真实窗口置前";
+            _labelsItem.Text = (_settings.ShowAmbiguityLabels ? "✓  " : "     ") + "重名窗口显示标签";
+            UpdateLabelSizeItems();
             _restoreHiddenItem.Visible = _settings.ExcludedApps.Count > 0;
             _restartAdminItem.Visible = !Elevation.Current;
             _restoreSizesItem.Visible = HasRestorableSizes();
             RebuildMonitorMenu();
 
-            bool hasCard = _menuCard != null;
+            bool hasCard = _menuCard != null && !_menuCard.IsDesktop;
             _pinItem.Visible = hasCard;
             _excludeItem.Visible = hasCard;
             _cardSeparator.Visible = hasCard;
+
+            bool hasLabelKey = hasCard && !string.IsNullOrEmpty(_menuCard.LabelKey);
+            _labelItem.Visible = hasLabelKey;
+            _clearLabelItem.Visible = hasLabelKey && _menuCard.LabelIsCustom;
             if (hasCard)
             {
                 string process = _menuCard.ProcessName ?? "";
@@ -777,6 +916,7 @@ namespace OneStepDock
             else
             {
                 _settings.PinnedApps.Add(process.ToLowerInvariant());
+                MoveProcessToTop(process);
             }
 
             SettingsStore.Save(_settings);

@@ -13,15 +13,24 @@ namespace OneStepDock
         public const int WM_GETICON = 0x007F;
 
         public const int GWL_EXSTYLE = -20;
+        public const long WS_EX_TRANSPARENT = 0x00000020L;
         public const long WS_EX_TOOLWINDOW = 0x00000080L;
+        public const long WS_EX_TOPMOST = 0x00000008L;
+        public const long WS_EX_LAYERED = 0x00080000L;
         public const long WS_EX_NOACTIVATE = 0x08000000L;
         public const long WS_EX_NOREDIRECTIONBITMAP = 0x00200000L;
+
+        public const uint LWA_ALPHA = 0x00000002;
+        public const int RGN_AND = 1;
+        public const int RGN_OR = 2;
+        public const int RGN_DIFF = 4;
 
         public const uint GA_ROOT = 2;
         public const int SW_RESTORE = 9;
         public const int SW_MAXIMIZE = 3;
 
         public const int DWMWA_CLOAKED = 14;
+        public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
 
         public const int DWM_TNP_RECTDESTINATION = 0x0001;
         public const int DWM_TNP_SOURCERECT = 0x0002;
@@ -38,6 +47,7 @@ namespace OneStepDock
         public const uint ABE_RIGHT = 2;
 
         public const uint MONITOR_DEFAULTTONEAREST = 2;
+        public const uint SPI_GETDESKWALLPAPER = 0x0073;
 
         public const int ICON_BIG = 1;
         public const int ICON_SMALL2 = 2;
@@ -217,6 +227,10 @@ namespace OneStepDock
         [DllImport("user32.dll")]
         public static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SystemParametersInfo(
+            uint uiAction, uint uiParam, StringBuilder pvParam, uint fWinIni);
+
         [DllImport("user32.dll")]
         public static extern bool RegisterHotKey(IntPtr hWnd, int id, int modifiers, int vk);
 
@@ -237,6 +251,25 @@ namespace OneStepDock
 
         [DllImport("dwmapi.dll")]
         public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out int value, int size);
+
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out RECT value, int size);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool redraw);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool SetLayeredWindowAttributes(
+            IntPtr hWnd, uint colorKey, byte alpha, uint flags);
+
+        [DllImport("gdi32.dll")]
+        public static extern IntPtr CreateRectRgn(int left, int top, int right, int bottom);
+
+        [DllImport("gdi32.dll")]
+        public static extern int CombineRgn(IntPtr destRgn, IntPtr srcRgn1, IntPtr srcRgn2, int combineMode);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        public static extern bool DeleteObject(IntPtr obj);
 
         [DllImport("dwmapi.dll")]
         public static extern int DwmRegisterThumbnail(IntPtr destination, IntPtr source, out IntPtr thumbnailId);

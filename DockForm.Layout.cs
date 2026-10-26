@@ -68,6 +68,8 @@ namespace OneStepDock
                 return;
             }
 
+            EndPeek();
+
             int target = _scrollOffset - Math.Sign(wheelDelta) * Px(90);
             target = Math.Max(0, Math.Min(max, target));
             if (target == _scrollOffset)
@@ -95,9 +97,24 @@ namespace OneStepDock
                 e.Graphics.FillRectangle(brush, client);
             }
 
-            if (_cards.Count == 0)
+            bool hasWindowCards = false;
+            foreach (ThumbnailCard card in _cards)
             {
-                var hintRect = new Rectangle(Px(16), Px(40), client.Width - Px(32), Px(40));
+                if (!card.IsDesktop)
+                {
+                    hasWindowCards = true;
+                    break;
+                }
+            }
+
+            if (!hasWindowCards)
+            {
+                int hintTop = Px(40);
+                if (_cards.Count > 0)
+                {
+                    hintTop = _cards[0].Bottom + Px(12);
+                }
+                var hintRect = new Rectangle(Px(16), hintTop, client.Width - Px(32), Px(40));
                 TextRenderer.DrawText(
                     e.Graphics,
                     "暂无其他窗口",
@@ -473,11 +490,15 @@ namespace OneStepDock
                         string title = card.Title;
                         if (card.IsHovered && !string.IsNullOrEmpty(title))
                         {
+                            int titleFontPx = Math.Max(Px(12), LabelFontPixel());
+                            int titleHeight = titleFontPx + Px(5);
+                            int bandHeight = titleFontPx + Px(18);
+
                             var scrimRect = new Rectangle(
                                 preview.Left - origin.X,
-                                preview.Bottom - origin.Y - Px(30),
+                                preview.Bottom - origin.Y - bandHeight,
                                 preview.Width,
-                                Px(30));
+                                bandHeight);
 
                             if (scrimRect.Width > 0 && scrimRect.Height > 0)
                             {
@@ -490,7 +511,7 @@ namespace OneStepDock
                                     g.FillRectangle(scrim, scrimRect);
                                 }
 
-                                using (Font titleFont = CreateOverlayFont(Px(12)))
+                                using (Font titleFont = CreateOverlayFont(titleFontPx))
                                 using (var titleBrush = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
                                 using (var titleFormat = new StringFormat
                                 {
@@ -502,9 +523,9 @@ namespace OneStepDock
                                 {
                                     var titleRect = new RectangleF(
                                         preview.Left + Px(12) - origin.X,
-                                        preview.Bottom - origin.Y - Px(24),
+                                        preview.Bottom - origin.Y - Px(9) - titleHeight,
                                         preview.Width - Px(24),
-                                        Px(17));
+                                        titleHeight);
                                     g.DrawString(title, titleFont, titleBrush, titleRect, titleFormat);
                                 }
                             }
@@ -544,6 +565,11 @@ namespace OneStepDock
                             }
                         }
 
+                        if (card.HasLabel && !card.IsHovered)
+                        {
+                            DrawCardLabel(g, card.Label, preview, origin, card.LabelIsCustom);
+                        }
+
                         var previewLocal = new Rectangle(
                             preview.Left - origin.X,
                             preview.Top - origin.Y,
@@ -566,7 +592,7 @@ namespace OneStepDock
 
                         using (GraphicsPath borderPath = CreateRoundedPath(previewLocal, cornerRadius))
                         using (var borderPen = new Pen(
-                            card.IsHovered
+                            card.IsHovered || card.IsDragging
                                 ? Color.FromArgb(210, DockTheme.Accent)
                                 : DockTheme.Border,
                             1f))
@@ -584,15 +610,116 @@ namespace OneStepDock
             }
         }
 
+        private void DrawCardLabel(Graphics g, string text, Rectangle preview, Point origin, bool isCustom)
+        {
+            if (string.IsNullOrEmpty(text) || preview.Width <= 0)
+            {
+                return;
+            }
+
+            int fontSize = LabelFontPixel();
+            int padX = Math.Max(Px(6), (int)Math.Round(fontSize * 0.70f));
+            int padY = Math.Max(Px(2), (int)Math.Round(fontSize * 0.24f));
+            int radius = Math.Max(Px(5), (int)Math.Round(fontSize * 0.42f));
+            int margin = Math.Max(Px(8), (int)Math.Round(fontSize * 0.55f));
+            int maxWidth = Math.Max(Px(40), preview.Width - margin * 2);
+
+            using (Font font = CreateOverlayFont(fontSize, isCustom ? FontStyle.Bold : FontStyle.Regular))
+            using (var format = new StringFormat
+            {
+                Trimming = StringTrimming.EllipsisCharacter,
+                FormatFlags = StringFormatFlags.NoWrap,
+                Alignment = StringAlignment.Near,
+                LineAlignment = StringAlignment.Center
+            })
+            {
+                int maxTextWidth = Math.Max(Px(20), maxWidth - padX * 2);
+                SizeF measured = g.MeasureString(
+                    text, font, new SizeF(maxTextWidth, fontSize * 2.2f), format);
+
+                int width = Math.Min(
+                    maxWidth,
+                    Math.Max(Px(26), (int)Math.Ceiling(measured.Width) + padX * 2));
+                int height = Math.Max(
+                    fontSize + padY * 2,
+                    (int)Math.Ceiling(measured.Height) + padY);
+
+                var rect = new Rectangle(
+                    preview.Left - origin.X + margin,
+                    preview.Bottom - origin.Y - margin - height,
+                    width,
+                    height);
+
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                using (GraphicsPath path = CreateRoundedPath(rect, radius))
+                using (var fill = new SolidBrush(isCustom
+                    ? Color.FromArgb(196, 20, 40, 76)
+                    : Color.FromArgb(158, 8, 12, 18)))
+                {
+                    g.FillPath(fill, path);
+                }
+
+                using (GraphicsPath path = CreateRoundedPath(rect, radius))
+                using (var pen = new Pen(isCustom
+                    ? Color.FromArgb(180, DockTheme.Accent)
+                    : Color.FromArgb(60, 255, 255, 255), isCustom ? 1.4f : 1f))
+                {
+                    g.DrawPath(pen, path);
+                }
+
+                var textRect = new Rectangle(
+                    rect.Left + padX,
+                    rect.Top,
+                    Math.Max(Px(10), rect.Width - padX * 2),
+                    rect.Height);
+                using (var brush = new SolidBrush(Color.FromArgb(252, 255, 255, 255)))
+                {
+                    g.DrawString(text, font, brush, textRect, format);
+                }
+            }
+        }
+
+        /// <summary>标签字号换算成设备像素，绘制标签与悬停标题共用。</summary>
+        private int LabelFontPixel()
+        {
+            int size = _settings.LabelFontSize;
+            if (size < AppSettings.MinLabelFontSize)
+            {
+                size = AppSettings.MinLabelFontSize;
+            }
+            else if (size > AppSettings.MaxLabelFontSize)
+            {
+                size = AppSettings.MaxLabelFontSize;
+            }
+
+            return Math.Max(6, Px(size));
+        }
+
         private static Font CreateOverlayFont(int pixelHeight)
+        {
+            return CreateOverlayFont(pixelHeight, FontStyle.Regular);
+        }
+
+        private static Font CreateOverlayFont(int pixelHeight, FontStyle style)
         {
             try
             {
-                return new Font("Microsoft YaHei UI", pixelHeight, FontStyle.Regular, GraphicsUnit.Pixel);
+                return new Font("Microsoft YaHei UI", pixelHeight, style, GraphicsUnit.Pixel);
             }
             catch
             {
-                return new Font(FontFamily.GenericSansSerif, pixelHeight, FontStyle.Regular, GraphicsUnit.Pixel);
+                try
+                {
+                    return new Font(FontFamily.GenericSansSerif, pixelHeight, style, GraphicsUnit.Pixel);
+                }
+                catch
+                {
+                    return new Font(
+                        FontFamily.GenericSansSerif,
+                        pixelHeight,
+                        FontStyle.Regular,
+                        GraphicsUnit.Pixel);
+                }
             }
         }
 

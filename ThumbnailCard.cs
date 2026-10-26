@@ -2,6 +2,8 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.IO;
+using System.Text;
 using System.Windows.Forms;
 
 namespace OneStepDock
@@ -13,23 +15,50 @@ namespace OneStepDock
         private readonly ThumbSurface _thumb;
         private readonly ToolTip _toolTip;
         private readonly Font _placeholderFont;
+        private readonly Font _mainMessageFont;
         private WindowItem _info;
         private IntPtr _thumbnailId;
         private Bitmap _icon;
+        private bool _isDesktop;
         private bool _hover;
         private bool _live;
         private bool _staticMode;
         private bool _thumbVisible = true;
         private bool _thumbFullyVisible = true;
+        private bool _dragCandidate;
+        private bool _dragging;
+        private Point _dragStartScreen;
+        private Control _dragSource;
         private DateTime _lastStaticCaptureUtc;
         private ulong _staticSignature;
         private Bitmap _staticPreview;
         private Bitmap _staticScaled;
+        private Bitmap _desktopWallpaper;
+        private Bitmap _desktopWallpaperScaled;
         private int _dpi = 96;
+        private string _label;
 
         public event EventHandler Clicked;
         public event EventHandler HoverChanged;
         public event EventHandler ContextMenuRequested;
+        public event EventHandler DragStarted;
+        public event EventHandler DragMoved;
+        public event EventHandler DragEnded;
+
+        public bool IsDesktop
+        {
+            get { return _isDesktop; }
+        }
+
+        public bool IsDragging
+        {
+            get { return _dragging; }
+        }
+
+        public bool IsMainWindow
+        {
+            get { return !_isDesktop && _info.IsForeground; }
+        }
 
         public IntPtr WindowHandle
         {
@@ -56,6 +85,33 @@ namespace OneStepDock
             get { return _info.Title; }
         }
 
+        public string Label
+        {
+            get { return _label; }
+        }
+
+        public bool HasLabel
+        {
+            get { return !string.IsNullOrEmpty(_label); }
+        }
+
+        /// <summary>窗口身份键，用于持久化自定义标签。</summary>
+        public string LabelKey { get; set; }
+
+        /// <summary>当前标签是不是用户自定义的（决定画法）。</summary>
+        public bool LabelIsCustom { get; set; }
+
+        public void SetLabel(string label)
+        {
+            string value = string.IsNullOrEmpty(label) ? null : label;
+            if (string.Equals(_label, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _label = value;
+        }
+
         public bool IsHovered
         {
             get { return _hover; }
@@ -71,11 +127,13 @@ namespace OneStepDock
             get { return _info.IsElevated && !Elevation.Current; }
         }
 
-        public ThumbnailCard(WindowItem info, ToolTip toolTip)
+        public ThumbnailCard(WindowItem info, ToolTip toolTip, bool desktop = false)
         {
             _info = info;
             _toolTip = toolTip;
+            _isDesktop = desktop;
             _placeholderFont = CreateUiFont(8f, FontStyle.Regular);
+            _mainMessageFont = CreateUiFont(9.5f, FontStyle.Regular);
 
             BackColor = DockTheme.Backdrop;
             DoubleBuffered = true;
@@ -92,15 +150,27 @@ namespace OneStepDock
 
             MouseEnter += (s, e) => SetHover(true);
             MouseLeave += (s, e) => OnAreaLeave();
-            MouseDown += (s, e) => OnCardMouseDown(e);
+            MouseDown += (s, e) => OnCardMouseDown(e, this);
+            MouseMove += (s, e) => OnCardMouseMove(e);
+            MouseUp += (s, e) => OnCardMouseUp(e);
             _thumb.MouseEnter += (s, e) => SetHover(true);
             _thumb.MouseLeave += (s, e) => OnAreaLeave();
-            _thumb.MouseDown += (s, e) => OnCardMouseDown(e);
+            _thumb.MouseDown += (s, e) => OnCardMouseDown(e, _thumb);
+            _thumb.MouseMove += (s, e) => OnCardMouseMove(e);
+            _thumb.MouseUp += (s, e) => OnCardMouseUp(e);
             _thumb.Resize += (s, e) => UpdateThumbnailDestination();
             LocationChanged += (s, e) => UpdateThumbnailDestination();
             _thumb.LocationChanged += (s, e) => UpdateThumbnailDestination();
 
-            LoadWindowIcon();
+            if (_isDesktop)
+            {
+                _icon = CreateDesktopIcon();
+                ReloadDesktopWallpaper();
+            }
+            else
+            {
+                LoadWindowIcon();
+            }
             UpdateTooltip();
         }
 
@@ -120,7 +190,8 @@ namespace OneStepDock
         public void UpdateInfo(WindowItem info)
         {
             bool needsThumbRefresh = _info.IsMinimized != info.IsMinimized ||
-                                     _info.IsNoRedirectionBitmap != info.IsNoRedirectionBitmap;
+                                     _info.IsNoRedirectionBitmap != info.IsNoRedirectionBitmap ||
+                                     _info.IsForeground != info.IsForeground;
             _info = info;
             UpdateTooltip();
             if (needsThumbRefresh && IsHandleCreated)
@@ -310,14 +381,24 @@ namespace OneStepDock
         {
             if (disposing)
             {
+                if (_dragSource != null)
+                {
+                    if (!_dragSource.IsDisposed)
+                    {
+                        _dragSource.Capture = false;
+                    }
+                    _dragSource = null;
+                }
                 ReleaseThumbnail();
                 DisposeStaticPreview();
+                DisposeDesktopWallpaper();
                 if (_icon != null)
                 {
                     _icon.Dispose();
                     _icon = null;
                 }
                 _placeholderFont.Dispose();
+                _mainMessageFont.Dispose();
             }
 
             base.Dispose(disposing);
@@ -329,6 +410,18 @@ namespace OneStepDock
             Rectangle area = _thumb.ClientRectangle;
             if (area.Width <= 0 || area.Height <= 0)
             {
+                return;
+            }
+
+            if (_isDesktop)
+            {
+                PaintDesktopPreview(g, area);
+                return;
+            }
+
+            if (_info.IsForeground)
+            {
+                PaintMainWindow(g, area);
                 return;
             }
 
@@ -366,6 +459,30 @@ namespace OneStepDock
             }
         }
 
+        private void PaintMainWindow(Graphics g, Rectangle area)
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var brush = new LinearGradientBrush(
+                area, DockTheme.ThumbTop, DockTheme.ThumbBottom, 90f))
+            {
+                g.FillRectangle(brush, area);
+            }
+
+            var textRect = new Rectangle(
+                area.Left + Px(16),
+                area.Top + Px(10),
+                area.Width - Px(32),
+                area.Height - Px(20));
+            TextRenderer.DrawText(
+                g,
+                "当前窗口已在主窗口中打开",
+                _mainMessageFont,
+                textRect,
+                DockTheme.Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+        }
+
         private void PaintStaticPreview(Graphics g, Rectangle area)
         {
             if (_staticScaled == null ||
@@ -394,6 +511,189 @@ namespace OneStepDock
             }
 
             g.DrawImageUnscaled(_staticScaled, area.Left, area.Top);
+        }
+
+        public void ReloadDesktopWallpaper()
+        {
+            if (!_isDesktop)
+            {
+                return;
+            }
+
+            DisposeDesktopWallpaper();
+            try
+            {
+                var buffer = new StringBuilder(1024);
+                if (Native.SystemParametersInfo(
+                    Native.SPI_GETDESKWALLPAPER,
+                    (uint)buffer.Capacity,
+                    buffer,
+                    0))
+                {
+                    string path = buffer.ToString();
+                    if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                    {
+                        using (var stream = new FileStream(
+                            path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        using (var image = Image.FromStream(stream))
+                        {
+                            _desktopWallpaper = new Bitmap(image);
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                DisposeDesktopWallpaper();
+            }
+
+            if (_thumb != null)
+            {
+                _thumb.HasContent = _desktopWallpaper != null;
+                _thumb.Invalidate();
+            }
+            Invalidate();
+        }
+
+        private void PaintDesktopPreview(Graphics g, Rectangle area)
+        {
+            if (_desktopWallpaper != null)
+            {
+                if (_desktopWallpaperScaled == null ||
+                    _desktopWallpaperScaled.Width != area.Width ||
+                    _desktopWallpaperScaled.Height != area.Height)
+                {
+                    DisposeDesktopScaled();
+                    try
+                    {
+                        _desktopWallpaperScaled = new Bitmap(
+                            area.Width, area.Height, PixelFormat.Format32bppPArgb);
+                        using (var scaled = Graphics.FromImage(_desktopWallpaperScaled))
+                        {
+                            scaled.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            scaled.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                            scaled.DrawImage(
+                                _desktopWallpaper,
+                                new Rectangle(0, 0, area.Width, area.Height));
+                        }
+                    }
+                    catch
+                    {
+                        DisposeDesktopScaled();
+                    }
+                }
+
+                if (_desktopWallpaperScaled != null)
+                {
+                    g.DrawImageUnscaled(_desktopWallpaperScaled, area.Left, area.Top);
+                    return;
+                }
+            }
+
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var brush = new LinearGradientBrush(
+                area, DockTheme.ThumbTop, DockTheme.ThumbBottom, 90f))
+            {
+                g.FillRectangle(brush, area);
+            }
+
+            int glyphWidth = Math.Min(area.Width - Px(40), Px(92));
+            int glyphHeight = Math.Max(Px(30), glyphWidth * 3 / 5);
+            var screen = new Rectangle(
+                area.Left + (area.Width - glyphWidth) / 2,
+                area.Top + (area.Height - glyphHeight) / 2 - Px(8),
+                glyphWidth,
+                glyphHeight);
+            if (glyphWidth > Px(20) && glyphHeight > Px(16))
+            {
+                using (var pen = new Pen(
+                    Color.FromArgb(150, DockTheme.Muted), Math.Max(1f, Px(1))))
+                {
+                    g.DrawRectangle(pen, screen);
+                    g.DrawLine(
+                        pen,
+                        screen.Left + screen.Width / 2,
+                        screen.Bottom,
+                        screen.Left + screen.Width / 2,
+                        screen.Bottom + Px(6));
+                    g.DrawLine(
+                        pen,
+                        screen.Left + screen.Width / 2 - Px(10),
+                        screen.Bottom + Px(6),
+                        screen.Left + screen.Width / 2 + Px(10),
+                        screen.Bottom + Px(6));
+                }
+            }
+
+            TextRenderer.DrawText(
+                g,
+                "桌面",
+                _placeholderFont,
+                new Rectangle(
+                    area.Left,
+                    area.Top + area.Height / 2 + Px(18),
+                    area.Width,
+                    Px(20)),
+                DockTheme.Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.Top |
+                TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+        }
+
+        private void DisposeDesktopScaled()
+        {
+            if (_desktopWallpaperScaled != null)
+            {
+                _desktopWallpaperScaled.Dispose();
+                _desktopWallpaperScaled = null;
+            }
+        }
+
+        private void DisposeDesktopWallpaper()
+        {
+            DisposeDesktopScaled();
+            if (_desktopWallpaper != null)
+            {
+                _desktopWallpaper.Dispose();
+                _desktopWallpaper = null;
+            }
+        }
+
+        private static Bitmap CreateDesktopIcon()
+        {
+            var bitmap = new Bitmap(64, 64, PixelFormat.Format32bppPArgb);
+            using (var g = Graphics.FromImage(bitmap))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                var screen = new Rectangle(7, 12, 50, 33);
+                using (var fill = new SolidBrush(Color.FromArgb(70, 255, 255, 255)))
+                using (GraphicsPath path = CreateRoundedPath(screen, 5))
+                {
+                    g.FillPath(fill, path);
+                }
+                using (var pen = new Pen(Color.White, 3.2f))
+                using (GraphicsPath path = CreateRoundedPath(screen, 5))
+                {
+                    g.DrawPath(pen, path);
+                }
+                using (var pen = new Pen(Color.White, 3.2f))
+                {
+                    g.DrawLine(pen, 32, 45, 32, 52);
+                    g.DrawLine(pen, 21, 53, 43, 53);
+                }
+            }
+            return bitmap;
+        }
+
+        private static GraphicsPath CreateRoundedPath(Rectangle rect, int radius)
+        {
+            var path = new GraphicsPath();
+            int diameter = Math.Max(1, radius * 2);
+            path.AddArc(rect.X, rect.Y, diameter, diameter, 180, 90);
+            path.AddArc(rect.Right - diameter, rect.Y, diameter, diameter, 270, 90);
+            path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(rect.X, rect.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         private void UseStaticPreview()
@@ -438,9 +738,25 @@ namespace OneStepDock
 
         private void ApplyThumbnail()
         {
+            if (_isDesktop)
+            {
+                _thumb.Live = false;
+                _thumb.HasContent = _desktopWallpaper != null;
+                _thumb.Invalidate();
+                return;
+            }
+
             ReleaseThumbnail();
             DisposeStaticPreview();
             _staticMode = false;
+
+            if (_info.IsForeground)
+            {
+                _thumb.Live = false;
+                _thumb.HasContent = false;
+                _thumb.Invalidate();
+                return;
+            }
 
             Control top = TopLevelControl;
             if (_info.IsMinimized || !Native.IsWindow(_info.Handle) ||
@@ -534,6 +850,14 @@ namespace OneStepDock
 
         private void UpdateTooltip()
         {
+            if (_isDesktop)
+            {
+                const string desktopText = "桌面\n单击显示桌面，再次单击恢复窗口";
+                _toolTip.SetToolTip(this, desktopText);
+                _toolTip.SetToolTip(_thumb, desktopText);
+                return;
+            }
+
             string text = _info.Title;
             if (!string.IsNullOrEmpty(_info.ProcessName))
             {
@@ -551,25 +875,121 @@ namespace OneStepDock
             _toolTip.SetToolTip(_thumb, text);
         }
 
-        private void OnCardMouseDown(MouseEventArgs e)
+        private void OnCardMouseDown(MouseEventArgs e, Control source)
         {
             if (e.Button == MouseButtons.Right)
             {
-                EventHandler contextHandler = ContextMenuRequested;
-                if (contextHandler != null)
+                if (!_dragging)
                 {
-                    contextHandler(this, EventArgs.Empty);
+                    EventHandler contextHandler = ContextMenuRequested;
+                    if (contextHandler != null)
+                    {
+                        contextHandler(this, EventArgs.Empty);
+                    }
                 }
                 return;
             }
 
-            if (e.Button == MouseButtons.Left)
+            if (e.Button != MouseButtons.Left || _dragging)
             {
-                EventHandler handler = Clicked;
-                if (handler != null)
+                return;
+            }
+
+            if (_isDesktop)
+            {
+                EventHandler desktopClick = Clicked;
+                if (desktopClick != null)
                 {
-                    handler(this, EventArgs.Empty);
+                    desktopClick(this, EventArgs.Empty);
                 }
+                return;
+            }
+
+            _dragCandidate = true;
+            _dragStartScreen = Cursor.Position;
+            _dragSource = source;
+            source.Capture = true;
+        }
+
+        private void OnCardMouseMove(MouseEventArgs e)
+        {
+            if (!_dragCandidate && !_dragging)
+            {
+                return;
+            }
+
+            Point screen = Cursor.Position;
+            if (!_dragging)
+            {
+                if (Math.Abs(screen.Y - _dragStartScreen.Y) < Px(4))
+                {
+                    return;
+                }
+
+                _dragging = true;
+                Cursor = Cursors.SizeNS;
+                _thumb.Cursor = Cursors.SizeNS;
+                SetHover(true);
+
+                EventHandler started = DragStarted;
+                if (started != null)
+                {
+                    started(this, EventArgs.Empty);
+                }
+            }
+
+            EventHandler moved = DragMoved;
+            if (moved != null)
+            {
+                moved(this, EventArgs.Empty);
+            }
+        }
+
+        private void OnCardMouseUp(MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+
+            if (_dragging)
+            {
+                _dragging = false;
+                _dragCandidate = false;
+                ReleaseDragCapture();
+                Cursor = Cursors.Hand;
+                _thumb.Cursor = Cursors.Hand;
+
+                EventHandler ended = DragEnded;
+                if (ended != null)
+                {
+                    ended(this, EventArgs.Empty);
+                }
+                return;
+            }
+
+            if (_dragCandidate)
+            {
+                _dragCandidate = false;
+                ReleaseDragCapture();
+
+                EventHandler clicked = Clicked;
+                if (clicked != null)
+                {
+                    clicked(this, EventArgs.Empty);
+                }
+            }
+        }
+
+        private void ReleaseDragCapture()
+        {
+            if (_dragSource != null)
+            {
+                if (!_dragSource.IsDisposed)
+                {
+                    _dragSource.Capture = false;
+                }
+                _dragSource = null;
             }
         }
 
@@ -591,6 +1011,11 @@ namespace OneStepDock
 
         private void OnAreaLeave()
         {
+            if (_dragging || _dragCandidate)
+            {
+                return;
+            }
+
             if (!ClientRectangle.Contains(PointToClient(Cursor.Position)))
             {
                 SetHover(false);
